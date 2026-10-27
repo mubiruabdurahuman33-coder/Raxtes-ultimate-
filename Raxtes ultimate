@@ -1,0 +1,102 @@
+import threading, time, socket, requests, webview
+from flask import Flask, render_template_string, request
+from youtubesearchpython import VideosSearch
+
+app = Flask(__name__)
+ANILIST_URL = "https://graphql.anilist.co"
+
+BASE_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RAXTES - MovieBox Clone</title>
+<style>
+:root{--bg:#0b0b0f;--card:#1c1c24;--pink:#ff2e63;--gray:#8a8a9a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#fff;font-family:Arial}
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#000;position:sticky;top:0;z-index:20}
+.logo{color:var(--pink);font-weight:900;font-size:22px}
+.search-box{display:flex;flex:1;margin:0 12px;background:#1e1e28;border-radius:25px;padding:8px 14px}
+.search-box input{flex:1;background:transparent;border:0;color:#fff;outline:none}
+.nav{display:flex;gap:8px;overflow-x:auto;padding:10px 16px;white-space:nowrap}
+.nav-item{padding:8px 16px;background:var(--card);border-radius:20px;font-size:13px;cursor:pointer}
+.nav-item.active{background:var(--pink)}
+.banner{height:280px;background:linear-gradient(0deg,#000 0%,transparent 60%),url('https://s4.anilist.co/file/anilistcdn/media/anime/banner/21-wdArKO4w1BT.jpg');background-size:cover;margin:10px;border-radius:16px;display:flex;align-items:flex-end;padding:20px}
+.section{padding:16px}.hscroll{display:flex;gap:12px;overflow-x:auto}
+.card{flex:0 0 130px;background:var(--card);border-radius:12px;overflow:hidden;cursor:pointer}
+.card img{width:130px;height:190px;object-fit:cover}.card p{font-size:11px;padding:6px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+.ad{background:#1a1a2e;border:1px dashed #333;padding:12px;text-align:center;border-radius:10px;margin:12px 16px;color:var(--gray);font-size:12px}
+.bottom{position:fixed;bottom:0;left:0;right:0;background:#000;display:flex;justify-content:space-around;padding:10px 0;z-index:20}
+.bottom div{text-align:center;font-size:10px;color:var(--gray);cursor:pointer}.bottom div.active{color:var(--pink)}
+.play-btn{background:var(--pink);color:#fff;padding:12px 30px;border-radius:25px;border:0;font-weight:900;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="header"><div class="logo">RAXTES</div><form class="search-box" method="GET" action="/"><input name="q" value="{{q}}" placeholder="Search..."><button type="submit" style="background:transparent;border:0;color:var(--pink)">🔍</button></form></div>
+<div class="nav">
+<div class="nav-item {{'active' if tab=='home' else ''}}" onclick="location.href='/?tab=home'">Home</div>
+<div class="nav-item {{'active' if tab=='anime' else ''}}" onclick="location.href='/?tab=anime&q={{q}}'">Anime</div>
+<div class="nav-item {{'active' if tab=='movies' else ''}}" onclick="location.href='/?tab=movies&q={{q}}'">Movies</div>
+<div class="nav-item" onclick="location.href='/?tab=anime&q=Action'">Action</div>
+<div class="nav-item" onclick="location.href='/?tab=anime&q=Romance'">Romance</div>
+</div>
+{% if detail %}
+<div style="padding:16px;display:flex;gap:16px"><img src="{{detail.cover}}" style="width:140px;height:200px;border-radius:12px"><div><h2>{{detail.title}}</h2><p style="color:var(--gray);font-size:12px">{{detail.status}} • {{detail.year}}</p><p style="font-size:12px">{{detail.desc}}</p><button class="play-btn" onclick="window.open('https://www.youtube.com/results?search_query={{detail.title}} trailer','_blank')">▶ PLAY NOW</button></div></div>
+<div class="ad">AD SPACE - MoMo: 07XXXXXXXX - Support RAXTES</div>
+{% else %}
+{% if tab=='home' or q=='' %}<div class="banner"><div><span style="background:var(--pink);padding:3px 8px;border-radius:4px;font-size:10px">TRENDING #1</span><h1>RAXTES MovieBox</h1><p style="font-size:12px;color:#ccc">Free Movies & Anime</p></div></div>{% endif %}
+<div class="ad">🔥 Support: MoMo 07XXXXXXX | <a href="https://mubiruabdurahuman33-coder.github.io/Raxtes/" style="color:var(--pink)">Download Latest</a></div>
+<div class="section"><h2>{{ 'Results' if q else 'Popular Anime' }}</h2><div class="grid">{% for a in animes %}<div class="card" onclick="location.href='/anime/{{a.id}}?tab={{tab}}&q={{q}}'"><img src="{{a.cover}}"><p>{{a.title}}</p></div>{% endfor %}</div></div>
+{% endif %}
+<div style="height:70px"></div>
+<div class="bottom"><div class="{{'active' if tab=='home' else ''}}" onclick="location.href='/?tab=home'">🏠<br>Home</div><div onclick="location.href='/?tab=anime'">🎬<br>Anime</div><div onclick="location.href='/?tab=movies&q=movie'">🎥<br>Movies</div><div>⬇<br>Download</div><div>👤<br>Me</div></div>
+</body>
+</html>
+"""
+
+def fetch_anime(q=""):
+    query = 'query ($search: String) { Page(perPage: 30) { media(search: $search, type: ANIME, sort: POPULARITY_DESC) { id title { romaji } coverImage { large } format seasonYear } } }'
+    try:
+        r = requests.post(ANILIST_URL, json={"query": query, "variables": {"search": q if q else None}}, timeout=10)
+        return [{"id": m["id"], "title": m["title"]["romaji"], "cover": m["coverImage"]["large"], "format": m["format"], "year": m["seasonYear"] or ""} for m in r.json()["data"]["Page"]["media"]]
+    except: return []
+
+def fetch_detail(aid):
+    query = 'query ($id: Int) { Media(id: $id) { title { romaji } description coverImage { extraLarge } status seasonYear } }'
+    try:
+        r = requests.post(ANILIST_URL, json={"query": query, "variables": {"id": int(aid)}}, timeout=10)
+        m = r.json()["data"]["Media"]
+        return {"title": m["title"]["romaji"], "desc": (m["description"] or "")[:400], "cover": m["coverImage"]["extraLarge"], "status": m["status"], "year": m["seasonYear"] or ""}
+    except: return None
+
+def fetch_movies(q):
+    try:
+        s = VideosSearch(f"{q} full movie free HD", limit=30)
+        return [{"id": v['id'], "title": v['title'], "cover": v['thumbnails'][0]['url'] if v['thumbnails'] else "", "format": "MOVIE", "year": v['duration']} for v in s.result()['result']]
+    except: return []
+
+@app.route("/")
+def home():
+    q=request.args.get("q","").strip(); tab=request.args.get("tab","home")
+    animes=fetch_movies(q) if tab=="movies" and q else fetch_anime(q)
+    return render_template_string(BASE_HTML, animes=animes, detail=None, q=q, tab=tab)
+
+@app.route("/anime/<aid>")
+def detail_page(aid):
+    q=request.args.get("q",""); tab=request.args.get("tab","anime")
+    d=fetch_detail(aid)
+    return render_template_string(BASE_HTML, animes=[], detail=d, q=q, tab=tab)
+
+def find_port():
+    with socket.socket() as s: s.bind(("127.0.0.1",0)); return s.getsockname()[1]
+def start(p): app.run(host="127.0.0.1", port=p, debug=False, use_reloader=False)
+
+if __name__=="__main__":
+    p=find_port(); threading.Thread(target=start, args=(p,), daemon=True).start()
+    url=f"http://127.0.0.1:{p}"
+    for _ in range(100):
+        try: requests.get(url, timeout=0.25); break
+        except: time.sleep(0.1)
+    webview.create_window("RAXTES - MovieBox Clone", url, width=400, height=800)
+    webview.start()
